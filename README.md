@@ -2,7 +2,10 @@
 
 Browser replay demo for the PingPongFSM sim2sim workflow.
 
-The first version is intentionally a recorded MuJoCo playback: it loads the G1 table-tennis MJCF scene in MuJoCo WASM, applies the recorded `qpos` trajectory, and overlays the ball trail, racket position, planner hit point, base target, and FSM/planner state. This keeps the web demo stable while leaving the live ONNX/planner/FSM port as a later step.
+The app has two modes:
+
+- `Replay`: recorded MuJoCo playback. It loads the G1 table-tennis MJCF scene in MuJoCo WASM, applies the recorded `qpos` trajectory, and overlays the ball trail, racket position, planner hit point, base target, and FSM/planner state.
+- `Physics`: browser-side sim2sim-lite. It samples incoming balls, runs MuJoCo `mj_step()`, builds the HRLHit-MJ 104-D observation, runs `policy_beta.onnx` through `onnxruntime-web`, applies PD torque, and uses a browser-side one-way impact fallback to keep returns robust when MuJoCo JS contact details are unavailable.
 
 ## Run
 
@@ -24,6 +27,7 @@ npm run preview -- --host 0.0.0.0 --port 4175
 - Robot: `public/assets/g1_description/g1_robot_movable_base.xml`
 - Meshes: `public/assets/g1_description/meshes/`
 - Trajectory: `public/trajectories/pingpongfsm_play_20s.json`
+- Policy: `public/policy_beta.onnx`
 
 The trajectory was converted from:
 
@@ -31,4 +35,4 @@ The trajectory was converted from:
 
 ## Next Step
 
-The live browser closed loop would need a TypeScript port of the landing planner, FSM state transitions, policy observation builder, and PD control loop, plus `onnxruntime-web` for the ONNX policy. The current replay mode is the safe first demo surface for sharing and visualization.
+The remaining gap to the Python sim2sim runner is the full landing planner/supervisor/FSM parity. Physics mode currently implements the policy observation, ONNX policy, PD loop, MuJoCo stepping, sampled serves, and a simplified hit-plane planner.

@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@mujoco/mujoco": "^3.9.0",
+    "onnxruntime-web": "^1.26.0",
     "three": "^0.184.0"
   }
 }

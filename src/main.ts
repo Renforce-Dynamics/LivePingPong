@@ -5,6 +5,7 @@ import loadMujoco from '@mujoco/mujoco';
 import wasmUrl from '@mujoco/mujoco/mujoco.wasm?url';
 
 import { loadMuJoCoScene, updateSceneTransforms, type MuJoCoScene } from './mujocoScene';
+import { PhysicsController, type JointSlots, type PhysicsSample } from './physicsController';
 import { duration, fsmName, loadTrajectory, sampleIndex, type PingPongTrajectory } from './trajectory';
 
 const SCENE_XML_URL = './assets/g1_description/g1_scene_table_tennis_movable.xml';
@@ -14,18 +15,12 @@ const VFS_SCENE_PATH = '/working/g1_scene_table_tennis_movable.xml';
 
 type MujocoModule = Awaited<ReturnType<typeof loadMujoco>>;
 
-interface JointSlots {
-  floatingQposAdr: number;
-  floatingDofAdr: number;
-  robotQposAdr: number;
-  robotDofAdr: number;
-  ballQposAdr: number;
-  ballDofAdr: number;
-}
-
 interface UI {
   playBtn: HTMLButtonElement;
   resetBtn: HTMLButtonElement;
+  serveBtn: HTMLButtonElement;
+  replayBtn: HTMLButtonElement;
+  physicsBtn: HTMLButtonElement;
   speedInput: HTMLInputElement;
   speedText: HTMLSpanElement;
   timeInput: HTMLInputElement;
@@ -37,6 +32,7 @@ interface UI {
   ballText: HTMLElement;
   baseText: HTMLElement;
   contactText: HTMLElement;
+  physicsStatus: HTMLElement;
 }
 
 function toThree(v: number[], target = new THREE.Vector3()): THREE.Vector3 {
@@ -193,9 +189,15 @@ function buildUI(traj: PingPongTrajectory): UI {
     <div class="bottom">
       <div class="panel controls">
         <div class="row">
+          <button class="button active" id="replay-btn" type="button">Replay</button>
+          <button class="button" id="physics-btn" type="button">Physics</button>
+          <span class="muted" id="physics-status">loading policy...</span>
+        </div>
+        <div class="row">
           <button class="button active" id="play-btn" type="button">Pause</button>
           <button class="button" id="reset-btn" type="button">Reset</button>
-          <span class="muted">trajectory replay</span>
+          <button class="button" id="serve-btn" type="button">Serve</button>
+          <span class="muted">sim2sim web</span>
         </div>
         <div class="row">
           <label for="time-input">Time</label>
@@ -232,6 +234,9 @@ function buildUI(traj: PingPongTrajectory): UI {
   return {
     playBtn: hud.querySelector('#play-btn')!,
     resetBtn: hud.querySelector('#reset-btn')!,
+    serveBtn: hud.querySelector('#serve-btn')!,
+    replayBtn: hud.querySelector('#replay-btn')!,
+    physicsBtn: hud.querySelector('#physics-btn')!,
     speedInput: hud.querySelector('#speed-input')!,
     speedText: hud.querySelector('#speed-text')!,
     timeInput: hud.querySelector('#time-input')!,
@@ -243,6 +248,7 @@ function buildUI(traj: PingPongTrajectory): UI {
     ballText: hud.querySelector('#ball-text')!,
     baseText: hud.querySelector('#base-text')!,
     contactText: hud.querySelector('#contact-text')!,
+    physicsStatus: hud.querySelector('#physics-status')!,
   };
 }
 
@@ -331,6 +337,34 @@ function updateOverlay(
   }
 }
 
+function updateOverlayLive(
+  overlay: ReturnType<typeof createOverlay>,
+  sample: PhysicsSample,
+) {
+  const hit = sample.planner.hitPos;
+  overlay.hitMarker.visible = sample.planner.valid && finiteVec(hit);
+  if (overlay.hitMarker.visible) toThree(hit, overlay.hitMarker.position);
+
+  overlay.racketMarker.visible = false;
+
+  const target = sample.planner.baseTarget;
+  overlay.baseTarget.visible = sample.planner.valid && Array.isArray(target) && target.length >= 2;
+  if (overlay.baseTarget.visible) overlay.baseTarget.position.set(target[0], 0.024, -target[1]);
+
+  const points = [toThree(sample.ballPos, new THREE.Vector3())];
+  overlay.ballTrail.geometry.dispose();
+  overlay.ballTrail.geometry = new THREE.BufferGeometry().setFromPoints(points);
+
+  overlay.velocityArrow.visible = Math.hypot(sample.ballVel[0], sample.ballVel[1], sample.ballVel[2]) > 0.01;
+  if (overlay.velocityArrow.visible) {
+    const origin = toThree(sample.ballPos, new THREE.Vector3());
+    const dir = toThree(sample.ballVel, new THREE.Vector3()).normalize();
+    overlay.velocityArrow.position.copy(origin);
+    overlay.velocityArrow.setDirection(dir);
+    overlay.velocityArrow.setLength(0.35, 0.09, 0.045);
+  }
+}
+
 function updateStatus(ui: UI, traj: PingPongTrajectory, i: number) {
   ui.timeText.textContent = `${traj.t[i].toFixed(2)}s`;
   ui.timeInput.value = String(traj.t[i]);
@@ -342,6 +376,18 @@ function updateStatus(ui: UI, traj: PingPongTrajectory, i: number) {
   ui.ballText.textContent = formatVec(traj.ball_pos[i]);
   ui.baseText.textContent = formatVec2(traj.base_pos_target[i]);
   ui.contactText.textContent = traj.racket_ball_contact[i] ? 'racket contact' : 'none';
+}
+
+function updateLiveStatus(ui: UI, sample: PhysicsSample) {
+  ui.timeText.textContent = `${sample.simTime.toFixed(2)}s`;
+  ui.fsmText.textContent = 'HITPLANNER';
+  ui.plannerText.textContent = sample.planner.valid
+    ? `OK · ${sample.planner.timeToHit.toFixed(2)}s`
+    : sample.planner.reason;
+  ui.hitText.textContent = formatVec(sample.planner.hitPos);
+  ui.ballText.textContent = formatVec(sample.ballPos);
+  ui.baseText.textContent = formatVec2(sample.planner.baseTarget);
+  ui.contactText.textContent = sample.contact ? `racket · rally ${sample.rally}` : `rally ${sample.rally}`;
 }
 
 async function init() {
@@ -411,6 +457,19 @@ async function init() {
   let speed = 1;
   let currentTime = 0;
   let lastFrame = performance.now();
+  let mode: 'replay' | 'physics' = 'replay';
+  let physics: PhysicsController | null = null;
+  let physicsReady = false;
+
+  PhysicsController.create(mujoco, mjScene, slots).then((controller) => {
+    physics = controller;
+    physics.reset();
+    physicsReady = true;
+    ui.physicsStatus.textContent = 'policy ready';
+  }).catch((err) => {
+    console.error('Physics policy failed:', err);
+    ui.physicsStatus.textContent = 'policy failed';
+  });
 
   function seek(time: number) {
     currentTime = Math.max(0, Math.min(duration(traj), time));
@@ -426,7 +485,27 @@ async function init() {
     ui.playBtn.textContent = playing ? 'Pause' : 'Play';
     ui.playBtn.classList.toggle('active', playing);
   };
-  ui.resetBtn.onclick = () => seek(0);
+  ui.resetBtn.onclick = () => {
+    if (mode === 'physics') {
+      physics?.reset();
+    } else {
+      seek(0);
+    }
+  };
+  ui.serveBtn.onclick = () => {
+    mode = 'physics';
+    updateModeButtons();
+    physics?.serve();
+  };
+  ui.replayBtn.onclick = () => {
+    mode = 'replay';
+    updateModeButtons();
+    seek(currentTime);
+  };
+  ui.physicsBtn.onclick = () => {
+    mode = 'physics';
+    updateModeButtons();
+  };
   ui.speedInput.oninput = () => {
     speed = Number(ui.speedInput.value);
     ui.speedText.textContent = `${speed.toFixed(1)}x`;
@@ -435,21 +514,35 @@ async function init() {
     playing = false;
     ui.playBtn.textContent = 'Play';
     ui.playBtn.classList.remove('active');
+    mode = 'replay';
+    updateModeButtons();
     seek(Number(ui.timeInput.value));
   };
 
+  function updateModeButtons() {
+    ui.replayBtn.classList.toggle('active', mode === 'replay');
+    ui.physicsBtn.classList.toggle('active', mode === 'physics');
+    ui.timeInput.disabled = mode === 'physics';
+  }
+
   seek(0);
 
-  function animate() {
+  async function animate() {
     requestAnimationFrame(animate);
     const now = performance.now();
     const dt = Math.min((now - lastFrame) / 1000, 0.1);
     lastFrame = now;
 
-    if (playing) {
+    if (mode === 'replay' && playing) {
       currentTime += dt * speed;
       if (currentTime > duration(traj)) currentTime = 0;
       seek(currentTime);
+    } else if (mode === 'physics' && playing && physicsReady && physics) {
+      const sample = await physics.step(dt * speed);
+      (window as any).__pingpongLastPhysics = sample;
+      updateSceneTransforms(mjScene.model, mjScene.data, mjScene.bodies);
+      updateOverlayLive(overlay, sample);
+      updateLiveStatus(ui, sample);
     }
 
     controls.update();
