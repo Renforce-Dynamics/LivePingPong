@@ -48,6 +48,7 @@ jobs:
           git push --force origin gh-pages
 
       - name: Enable Pages branch source
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
