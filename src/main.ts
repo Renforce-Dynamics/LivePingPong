@@ -23,7 +23,9 @@ interface UI {
   replayBtn: HTMLButtonElement;
   physicsBtn: HTMLButtonElement;
   uploadBtn: HTMLButtonElement;
+  policyUploadBtn: HTMLButtonElement;
   fileInput: HTMLInputElement;
+  policyFileInput: HTMLInputElement;
   speedInput: HTMLInputElement;
   speedText: HTMLSpanElement;
   timeInput: HTMLInputElement;
@@ -195,7 +197,9 @@ function buildUI(traj: PingPongTrajectory): UI {
         <div class="row">
           <button class="button active" id="replay-btn" type="button">Replay</button>
           <button class="button" id="physics-btn" type="button">Physics</button>
-          <span class="muted" id="physics-status">loading policy...</span>
+          <input id="policy-file-input" type="file" accept=".onnx" hidden />
+          <button class="button" id="policy-upload-btn" type="button">Upload ONNX</button>
+          <span class="muted" id="physics-status">policy required</span>
         </div>
         <div class="row">
           <button class="button active" id="play-btn" type="button">Pause</button>
@@ -247,7 +251,9 @@ function buildUI(traj: PingPongTrajectory): UI {
     replayBtn: hud.querySelector('#replay-btn')!,
     physicsBtn: hud.querySelector('#physics-btn')!,
     uploadBtn: hud.querySelector('#upload-btn')!,
+    policyUploadBtn: hud.querySelector('#policy-upload-btn')!,
     fileInput: hud.querySelector('#replay-file-input')!,
+    policyFileInput: hud.querySelector('#policy-file-input')!,
     speedInput: hud.querySelector('#speed-input')!,
     speedText: hud.querySelector('#speed-text')!,
     timeInput: hud.querySelector('#time-input')!,
@@ -474,16 +480,6 @@ async function init() {
   let physics: PhysicsController | null = null;
   let physicsReady = false;
 
-  PhysicsController.create(mujoco, mjScene, slots).then((controller) => {
-    physics = controller;
-    physics.reset();
-    physicsReady = true;
-    ui.physicsStatus.textContent = 'policy ready';
-  }).catch((err) => {
-    console.error('Physics policy failed:', err);
-    ui.physicsStatus.textContent = 'policy failed';
-  });
-
   function seek(time: number) {
     currentTime = Math.max(0, Math.min(duration(traj), time));
     const i = sampleIndex(traj, currentTime);
@@ -506,9 +502,13 @@ async function init() {
     }
   };
   ui.serveBtn.onclick = () => {
+    if (!physicsReady || !physics) {
+      ui.physicsStatus.textContent = 'upload ONNX first';
+      return;
+    }
     mode = 'physics';
     updateModeButtons();
-    physics?.serve();
+    physics.serve();
   };
   ui.replayBtn.onclick = () => {
     mode = 'replay';
@@ -516,6 +516,10 @@ async function init() {
     seek(currentTime);
   };
   ui.physicsBtn.onclick = () => {
+    if (!physicsReady || !physics) {
+      ui.physicsStatus.textContent = 'upload ONNX first';
+      return;
+    }
     mode = 'physics';
     updateModeButtons();
   };
@@ -532,6 +536,25 @@ async function init() {
     seek(Number(ui.timeInput.value));
   };
   ui.uploadBtn.onclick = () => ui.fileInput.click();
+  ui.policyUploadBtn.onclick = () => ui.policyFileInput.click();
+  ui.policyFileInput.onchange = async () => {
+    const file = ui.policyFileInput.files?.[0];
+    if (!file) return;
+    physicsReady = false;
+    ui.physicsStatus.textContent = `loading ${file.name}`;
+    try {
+      physics = await PhysicsController.create(mujoco, mjScene, slots, await file.arrayBuffer());
+      physics.reset();
+      physicsReady = true;
+      ui.physicsStatus.textContent = file.name;
+    } catch (err: any) {
+      console.error('Physics policy failed:', err);
+      physics = null;
+      ui.physicsStatus.textContent = `failed: ${err?.message ?? err}`;
+    } finally {
+      ui.policyFileInput.value = '';
+    }
+  };
   ui.fileInput.onchange = async () => {
     const file = ui.fileInput.files?.[0];
     if (!file) return;

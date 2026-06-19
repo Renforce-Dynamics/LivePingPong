@@ -106,8 +106,8 @@ export class PhysicsController {
     this.session = session;
   }
 
-  static async create(mujoco: MujocoModule, scene: MuJoCoScene, slots: JointSlots) {
-    const session = await ort.InferenceSession.create('./policy_beta.onnx', {
+  static async create(mujoco: MujocoModule, scene: MuJoCoScene, slots: JointSlots, policyBuffer: ArrayBuffer) {
+    const session = await ort.InferenceSession.create(policyBuffer, {
       executionProviders: ['wasm'],
       graphOptimizationLevel: 'all',
     });
