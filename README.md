@@ -7,6 +7,8 @@ The app has two modes:
 - `Replay`: recorded MuJoCo playback. It loads the G1 table-tennis MJCF scene in MuJoCo WASM, applies the recorded `qpos` trajectory, and overlays the ball trail, racket position, planner hit point, base target, and FSM/planner state.
 - `Physics`: browser-side sim2sim-lite. It samples incoming balls, runs MuJoCo `mj_step()`, builds the HRLHit-MJ 104-D observation, runs `policy_beta.onnx` through `onnxruntime-web`, applies PD torque, and uses a browser-side one-way impact fallback to keep returns robust when MuJoCo JS contact details are unavailable.
 
+Replay defaults to `public/trajectories/pingpongfsm_play_20s.json`. Use `Upload NPZ` in the UI to load recorder `.npz` files directly in the browser; converted `.json` files are also accepted.
+
 ## Run
 
 ```bash

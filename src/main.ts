@@ -5,6 +5,7 @@ import loadMujoco from '@mujoco/mujoco';
 import wasmUrl from '@mujoco/mujoco/mujoco.wasm?url';
 
 import { loadMuJoCoScene, updateSceneTransforms, type MuJoCoScene } from './mujocoScene';
+import { loadTrajectoryFromFile } from './npzLoader';
 import { PhysicsController, type JointSlots, type PhysicsSample } from './physicsController';
 import { duration, fsmName, loadTrajectory, sampleIndex, type PingPongTrajectory } from './trajectory';
 
@@ -21,6 +22,8 @@ interface UI {
   serveBtn: HTMLButtonElement;
   replayBtn: HTMLButtonElement;
   physicsBtn: HTMLButtonElement;
+  uploadBtn: HTMLButtonElement;
+  fileInput: HTMLInputElement;
   speedInput: HTMLInputElement;
   speedText: HTMLSpanElement;
   timeInput: HTMLInputElement;
@@ -33,6 +36,7 @@ interface UI {
   baseText: HTMLElement;
   contactText: HTMLElement;
   physicsStatus: HTMLElement;
+  replayStatus: HTMLElement;
 }
 
 function toThree(v: number[], target = new THREE.Vector3()): THREE.Vector3 {
@@ -210,6 +214,11 @@ function buildUI(traj: PingPongTrajectory): UI {
           <input class="range" id="speed-input" type="range" min="0.1" max="2.5" step="0.1" value="1" />
           <span class="readout" id="speed-text">1.0x</span>
         </div>
+        <div class="row">
+          <input id="replay-file-input" type="file" accept=".npz,.json" hidden />
+          <button class="button" id="upload-btn" type="button">Upload NPZ</button>
+          <span class="muted" id="replay-status">default replay</span>
+        </div>
         <div class="legend">
           <span class="legend-item"><span class="swatch" style="background:#f8c537"></span>ball trail</span>
           <span class="legend-item"><span class="swatch" style="background:#ee4b5a"></span>hit point</span>
@@ -237,6 +246,8 @@ function buildUI(traj: PingPongTrajectory): UI {
     serveBtn: hud.querySelector('#serve-btn')!,
     replayBtn: hud.querySelector('#replay-btn')!,
     physicsBtn: hud.querySelector('#physics-btn')!,
+    uploadBtn: hud.querySelector('#upload-btn')!,
+    fileInput: hud.querySelector('#replay-file-input')!,
     speedInput: hud.querySelector('#speed-input')!,
     speedText: hud.querySelector('#speed-text')!,
     timeInput: hud.querySelector('#time-input')!,
@@ -249,6 +260,7 @@ function buildUI(traj: PingPongTrajectory): UI {
     baseText: hud.querySelector('#base-text')!,
     contactText: hud.querySelector('#contact-text')!,
     physicsStatus: hud.querySelector('#physics-status')!,
+    replayStatus: hud.querySelector('#replay-status')!,
   };
 }
 
@@ -394,10 +406,11 @@ async function init() {
   const app = document.getElementById('app')!;
   app.innerHTML = '<div class="loading">Loading PingPongFSM sim2sim demo...</div>';
 
-  const [mujoco, traj] = await Promise.all([
+  const [mujoco, defaultTraj] = await Promise.all([
     loadMujoco({ locateFile: (path: string) => (path === 'mujoco.wasm' ? wasmUrl : path) }),
     loadTrajectory(TRAJECTORY_URL),
   ]);
+  let traj = defaultTraj;
   await setupVFS(mujoco);
 
   app.innerHTML = '<div class="viewport" id="viewport"></div>';
@@ -517,6 +530,35 @@ async function init() {
     mode = 'replay';
     updateModeButtons();
     seek(Number(ui.timeInput.value));
+  };
+  ui.uploadBtn.onclick = () => ui.fileInput.click();
+  ui.fileInput.onchange = async () => {
+    const file = ui.fileInput.files?.[0];
+    if (!file) return;
+    const wasPlaying = playing;
+    playing = false;
+    ui.playBtn.textContent = 'Play';
+    ui.playBtn.classList.remove('active');
+    ui.replayStatus.textContent = `loading ${file.name}`;
+    try {
+      traj = await loadTrajectoryFromFile(file);
+      mode = 'replay';
+      currentTime = 0;
+      ui.timeInput.max = String(duration(traj));
+      ui.timeInput.step = String(Math.max(duration(traj) / 1000, 0.001));
+      ui.durationText.textContent = `${duration(traj).toFixed(2)}s`;
+      updateModeButtons();
+      seek(0);
+      ui.replayStatus.textContent = file.name;
+      playing = wasPlaying;
+      ui.playBtn.textContent = playing ? 'Pause' : 'Play';
+      ui.playBtn.classList.toggle('active', playing);
+    } catch (err: any) {
+      console.error('Failed to load replay file:', err);
+      ui.replayStatus.textContent = `failed: ${err?.message ?? err}`;
+    } finally {
+      ui.fileInput.value = '';
+    }
   };
 
   function updateModeButtons() {
